@@ -79,6 +79,15 @@
       .app-main{padding-left:22px!important;padding-right:22px!important}
       .desktop-side{width:220px}
     }
+  
+    .dt-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+    .dt-search{max-width:280px;width:100%}
+    .dt-sort{display:inline-flex;align-items:center;gap:5px;font-weight:600;text-align:left}
+    .dt-pages{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px}
+    .dt-page{min-width:34px;min-height:34px;padding:5px 9px;border:1px solid #eadcda;border-radius:8px;background:white;color:#59494b}
+    .dt-page.active{background:#8f5964;color:white;border-color:#8f5964}
+    .dt-page:disabled{opacity:.4;cursor:not-allowed}
+
   </style>
   <script src="https://cdn.tailwindcss.com/3.4.17" type="text/javascript"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.577.0/dist/umd/lucide.min.js" type="text/javascript"></script>
@@ -321,6 +330,7 @@
     const CACHE_KEY='owp_local_data_v1', QUEUE_KEY='owp_pending_queue_v1';
     let data=demo(), endpoint=DEFAULT_ENDPOINT, page='home', editing=null, deleting=null, charts={}, cardView=false, busy=false;
     let pendingQueue=loadJSON(QUEUE_KEY,[]), queueRunning=false;
+    const dataTableState={Transactions:{page:1,query:'',sort:'date',direction:'desc'},Guests:{page:1,query:'',sort:'name',direction:'asc'}};
     function loadJSON(key,fallback){try{const value=JSON.parse(localStorage.getItem(key)||'null');return value??fallback}catch(_){return fallback}}
     function saveLocalState(){try{localStorage.setItem(CACHE_KEY,JSON.stringify(data));localStorage.setItem(QUEUE_KEY,JSON.stringify(pendingQueue))}catch(error){console.warn('Gagal menyimpan cache lokal:',error)}}
     function applyOperation(target,item){
@@ -427,6 +437,27 @@
       if(!rows.length)return empty();
       return `<div class="table-wrap"><table><thead><tr>${cols.map(c=>`<th>${escapeHTML(c[0])}</th>`).join('')}<th class="no-print">Aksi</th></tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(([label,key,format])=>`<td>${format?format(r):escapeHTML(r[key]??'—')}</td>`).join('')}<td>${actions(sheet,r[ID_KEY[sheet]])}</td></tr>`).join('')}</tbody></table></div>`
     }
+    function dataTable(rows,cols,sheet){
+      const state=dataTableState[sheet],pageSize=10,query=state.query.trim().toLocaleLowerCase('id-ID');
+      const filtered=rows.filter(row=>!query||cols.map(([,key])=>String(row[key]??'')).join(' ').toLocaleLowerCase('id-ID').includes(query));
+      filtered.sort((a,b)=>{
+        const av=a[state.sort]??'',bv=b[state.sort]??'',an=Number(av),bn=Number(bv);
+        let cmp=av!==''&&bv!==''&&!Number.isNaN(an)&&!Number.isNaN(bn)?an-bn:String(av).localeCompare(String(bv),'id-ID',{numeric:true,sensitivity:'base'});
+        return state.direction==='asc'?cmp:-cmp;
+      });
+      const pages=Math.max(1,Math.ceil(filtered.length/pageSize));state.page=Math.min(Math.max(1,state.page),pages);
+      const start=(state.page-1)*pageSize,visible=filtered.slice(start,start+pageSize);
+      const head=cols.map(([label,key])=>`<th><button type="button" class="dt-sort" data-dt-sort="${key}" data-dt-sheet="${sheet}">${escapeHTML(label)} <span>${state.sort===key?(state.direction==='asc'?'↑':'↓'):'↕'}</span></button></th>`).join('');
+      const body=visible.map(r=>`<tr>${cols.map(([,key,format])=>`<td>${format?format(r):escapeHTML(r[key]??'—')}</td>`).join('')}<td>${actions(sheet,r[ID_KEY[sheet]])}</td></tr>`).join('');
+      let nums='';for(let n=1;n<=pages;n++){if(n===1||n===pages||Math.abs(n-state.page)<=2)nums+=`<button type="button" class="dt-page ${n===state.page?'active':''}" data-dt-page="${n}" data-dt-sheet="${sheet}">${n}</button>`;else if(Math.abs(n-state.page)===3)nums+='<span class="tiny">…</span>'}
+      return `<div class="dt-toolbar no-print"><span class="tiny">10 data per halaman</span><input class="field dt-search" type="search" placeholder="Cari data..." aria-label="Cari data" data-dt-search="${sheet}" value="${escapeHTML(state.query)}"></div>
+      <div class="table-wrap"><table><thead><tr>${head}<th class="no-print">Aksi</th></tr></thead><tbody>${body||`<tr><td colspan="${cols.length+1}" class="text-center py-6 tiny">${query?'Data tidak ditemukan.':'Belum ada data.'}</td></tr>`}</tbody></table></div>
+      <div class="dt-toolbar no-print mt-3"><span class="tiny">Menampilkan ${filtered.length?start+1:0}–${Math.min(start+10,filtered.length)} dari ${filtered.length} data</span><div class="dt-pages"><button class="dt-page" data-dt-prev="${sheet}" ${state.page===1?'disabled':''}>‹</button>${nums}<button class="dt-page" data-dt-next="${sheet}" ${state.page===pages?'disabled':''}>›</button></div></div>`;
+    }
+    function refreshDataTable(sheet){
+      if(sheet==='Transactions')$('#transactions-list').innerHTML=dataTable([...data.Transactions],[['Tanggal','date',r=>dateText(r.date)],['Jenis','type',r=>r.type==='income'?'Masuk':'Keluar'],['Kategori','category'],['Keterangan','description'],['Nominal','amount',r=>money(r.amount)],['Status','status']],'Transactions');
+      if(sheet==='Guests')$('#guests-list').innerHTML=dataTable([...data.Guests],[['Nama','name'],['Undangan','invitation_status'],['Kehadiran','attendance_status']],'Guests');
+    }
     function drawChart(id,type,labels,values){
       if(charts[id])charts[id].destroy();
       if(!window.Chart)return;
@@ -443,12 +474,12 @@
       $('#recent-transactions').innerHTML=latest.length?latest.map(r=>`<div class="flex justify-between gap-2 py-3 border-b border-[#f0e6e3] text-sm"><span>${escapeHTML(r.description)}<br><small class="tiny">${dateText(r.date)}</small></span><strong>${r.type==='income'?'+':'−'} ${money(r.amount)}</strong></div>`).join(''):empty();
       const next=[...data.Checklist].filter(r=>r.status!=='Selesai').sort((a,b)=>a.deadline.localeCompare(b.deadline)).slice(0,4);
       $('#upcoming-tasks').innerHTML=next.length?next.map(r=>`<div class="flex justify-between gap-2 py-3 border-b border-[#f0e6e3] text-sm"><span>${escapeHTML(r.task_name)}</span><span class="tiny">${dateText(r.deadline)}</span></div>`).join(''):empty();
-      $('#transactions-list').innerHTML=table([...data.Transactions].sort((a,b)=>b.date.localeCompare(a.date)),[['Tanggal','date',r=>dateText(r.date)],['Jenis','type',r=>r.type==='income'?'Masuk':'Keluar'],['Kategori','category'],['Keterangan','description'],['Nominal','amount',r=>money(r.amount)],['Status','status']],'Transactions');
+      refreshDataTable('Transactions');
       $('#budget-list').innerHTML=table(data.Budget,[['Kategori','category'],['Target','budget_amount',r=>money(r.budget_amount)],['Realisasi','actual_amount',r=>money(categorySpent(r.category))],['Sisa','remaining_amount',r=>money(Number(r.budget_amount)-categorySpent(r.category))],['Terpakai','percentage',r=>`${Math.round(Number(r.budget_amount)?categorySpent(r.category)/Number(r.budget_amount)*100:0)}%${categorySpent(r.category)>Number(r.budget_amount)?' · Melebihi anggaran':''}`]],'Budget');
 const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Number(r.quantity||1),0),actual=data.Seserahan.reduce((a,r)=>a+Number(r.actual_price||0)*Number(r.quantity||1),0),bought=data.Seserahan.filter(r=>r.status!=='Belum dibeli').length;
       $('#seserahan-metrics').innerHTML=metric('Total estimasi',money(estimated))+metric('Total aktual',money(actual))+metric('Selisih estimasi − aktual',money(estimated-actual))+metric('Sudah disiapkan',`${bought}/${data.Seserahan.length}`);
       renderGifts();
-      $('#guests-list').innerHTML=table(data.Guests,[['Nama','name'],['Undangan','invitation_status'],['Kehadiran','attendance_status']],'Guests');
+      refreshDataTable('Guests');
       $('#vendors-list').innerHTML=table(data.Vendors,[['Vendor','vendor_name'],['Kategori','category'],['Kontak','contact'],['Harga','total_price',r=>money(r.total_price)],['DP','down_payment',r=>money(r.down_payment)],['Sisa','remaining_payment',r=>money(Number(r.total_price)-Number(r.down_payment))],['Status','status']],'Vendors');
       $('#task-progress').style.width=t.completion+'%';$('#task-progress-label').textContent=`${data.Checklist.filter(r=>r.status==='Selesai').length} dari ${data.Checklist.length} tugas selesai · ${Math.round(t.completion)}%`;
       $('#checklist-list').innerHTML=table([...data.Checklist].sort((a,b)=>a.deadline.localeCompare(b.deadline)),[['Tugas','task_name'],['Tahap','category'],['Deadline','deadline',r=>dateText(r.deadline)],['Prioritas','priority'],['Status','status']],'Checklist');
@@ -603,6 +634,16 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
         finally{lock(button,false);connection()}
       });
       $('#demo-button').onclick=()=>{endpoint='';localStorage.removeItem('owp_api_endpoint');data=demo();$('#endpoint-url').value='';render();status('Kembali ke demo sementara.')};
+      document.addEventListener('input',e=>{
+        const el=e.target.closest('[data-dt-search]');if(!el)return;
+        const sheet=el.dataset.dtSearch;dataTableState[sheet].query=el.value;dataTableState[sheet].page=1;refreshDataTable(sheet);
+      });
+      document.addEventListener('click',e=>{
+        const srt=e.target.closest('[data-dt-sort]');if(srt){const st=dataTableState[srt.dataset.dtSheet];if(st.sort===srt.dataset.dtSort)st.direction=st.direction==='asc'?'desc':'asc';else{st.sort=srt.dataset.dtSort;st.direction='asc'}st.page=1;refreshDataTable(srt.dataset.dtSheet);return}
+        const pg=e.target.closest('[data-dt-page]');if(pg){const sh=pg.dataset.dtSheet;dataTableState[sh].page=Number(pg.dataset.dtPage);refreshDataTable(sh);return}
+        const prev=e.target.closest('[data-dt-prev]');if(prev){const sh=prev.dataset.dtPrev;dataTableState[sh].page=Math.max(1,dataTableState[sh].page-1);refreshDataTable(sh);return}
+        const next=e.target.closest('[data-dt-next]');if(next){const sh=next.dataset.dtNext;dataTableState[sh].page+=1;refreshDataTable(sh)}
+      });
       $('#ses-search').oninput=renderGifts;$('#ses-filter').onchange=renderGifts;
       $('#ses-view-toggle').onclick=()=>{cardView=!cardView;renderGifts()};
       $('#report-start').onchange=renderReports;$('#report-end').onchange=renderReports;
