@@ -346,7 +346,26 @@
       Checklist:[{task_id:'tk1',task_name:'Menentukan anggaran dan konsep',category:'12 bulan sebelum',deadline:'2026-06-20',priority:'Tinggi',status:'Selesai',notes:''},{task_id:'tk2',task_name:'Mencari venue dan vendor',category:'9 bulan sebelum',deadline:'2026-09-20',priority:'Tinggi',status:'Belum selesai',notes:''}],
       Activity_Log:[]
     });
+    const CACHE_KEY='owp_local_data_v1', QUEUE_KEY='owp_pending_queue_v1';
     let data=demo(), endpoint=DEFAULT_ENDPOINT, page='home', editing=null, deleting=null, charts={}, cardView=false, busy=false;
+    let pendingQueue=loadJSON(QUEUE_KEY,[]), queueRunning=false;
+    function loadJSON(key,fallback){try{const value=JSON.parse(localStorage.getItem(key)||'null');return value??fallback}catch(_){return fallback}}
+    function saveLocalState(){try{localStorage.setItem(CACHE_KEY,JSON.stringify(data));localStorage.setItem(QUEUE_KEY,JSON.stringify(pendingQueue))}catch(error){console.warn('Gagal menyimpan cache lokal:',error)}}
+    function applyOperation(target,item){
+      const list=target[item.sheet];if(!Array.isArray(list))return;
+      const key=ID_KEY[item.sheet],id=item.action==='deleteRecord'?item.id:item.record?.[key];
+      const index=list.findIndex(row=>String(row[key])===String(id));
+      if(item.action==='createRecord'){if(index<0)list.push(item.record);else list[index]=item.record}
+      else if(item.action==='updateRecord'){if(index>=0)list[index]=item.record;else list.push(item.record)}
+      else if(item.action==='deleteRecord'&&index>=0)list.splice(index,1);
+    }
+    function replayPending(target){pendingQueue.forEach(item=>applyOperation(target,item));return target}
+    function pendingCount(){return pendingQueue.length}
+    function updateSyncIndicator(){
+      const label=!endpoint?'Mode demo · belum tersimpan':pendingCount()?'Tersimpan lokal · '+pendingCount()+' menunggu sinkronisasi':'Tersinkron ke Spreadsheet';
+      $('#connection-pill').textContent=label;$('#connection-side').textContent=label;
+      $('#endpoint-message').textContent=!endpoint?'Mode demo: perubahan belum tersimpan permanen.':pendingCount()?'Perubahan terbaru tersimpan di browser dan menunggu dikirim ke Spreadsheet.':'Data sudah tersinkron ke Google Spreadsheet.';
+    }
     const $=selector=>document.querySelector(selector);
     const money=n=>new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format(Number(n)||0);
     const dateText=value=>value?new Intl.DateTimeFormat('id-ID',{day:'numeric',month:'long',year:'numeric'}).format(new Date(value+'T12:00:00')):'—';
@@ -368,12 +387,7 @@
       const el=$('#toast');el.textContent=message;el.style.background=error?'#a6474e':'#527e61';el.classList.remove('hidden');
       clearTimeout(status.timer);status.timer=setTimeout(()=>el.classList.add('hidden'),4500);
     };
-    function connection(){
-      const connected=Boolean(endpoint);
-      const text=connected?'Terhubung ke Spreadsheet':'Mode demo · belum tersimpan';
-      $('#connection-pill').textContent=text;$('#connection-side').textContent=text;
-      $('#endpoint-message').textContent=connected?'Data tersimpan pada Google Spreadsheet.':'Mode demo: perubahan belum tersimpan permanen.';
-    }
+    function connection(){updateSyncIndicator()}
     async function request(payload){
       if(!endpoint)throw new Error('URL Google Apps Script belum diatur pada Pengaturan.');
       const response=await fetch(endpoint,{
@@ -389,29 +403,51 @@
     }
     function normalize(source){const result={};for(const key of Object.keys(HEADERS))result[key]=Array.isArray(source?.[key])?source[key]:[];return result}
     async function sync(){
-      if(endpoint){data=normalize(await request({operation:'getData'}));}
+      if(endpoint){
+        const remote=normalize(await request({operation:'getData'}));
+        data=replayPending(remote);
+        saveLocalState();
+      }
       render();
+      updateSyncIndicator();
+    }
+    async function flushQueue(){
+      if(queueRunning||!endpoint||!pendingQueue.length)return;
+      queueRunning=true;updateSyncIndicator();
+      try{
+        while(endpoint&&pendingQueue.length){
+          const item=pendingQueue[0];
+          const payload={operation:item.action,sheet:item.sheet,...(item.action==='deleteRecord'?{id:item.id}:{record:item.record})};
+          await request(payload);
+          pendingQueue.shift();
+          saveLocalState();
+          updateSyncIndicator();
+        }
+        if(!pendingQueue.length)status('Semua perubahan berhasil disinkronkan ke Spreadsheet.');
+      }catch(error){
+        console.warn('Sinkronisasi tertunda:',error);
+        status('Data sudah tersimpan di browser, tetapi sinkronisasi tertunda. Akan dicoba lagi otomatis.',true);
+      }finally{
+        queueRunning=false;updateSyncIndicator();
+      }
     }
     function lock(control,value){busy=value;if(control){control.disabled=value;control.style.opacity=value?'.55':'1'}$('#connection-pill').textContent=value?'Memproses…':endpoint?'Terhubung ke Spreadsheet':'Mode demo · belum tersimpan'}
     async function mutate(sheet,action,record,control){
       if(busy)return false;
-      lock(control,true);
-      try{
-        if(endpoint){
-          await request({operation:action,sheet,...(action==='deleteRecord'?{id:record[ID_KEY[sheet]]}:{record})});
-          await sync();
-        }else{
-          const list=data[sheet],key=ID_KEY[sheet],index=list.findIndex(r=>r[key]===record[key]);
-          if(action==='createRecord')list.push(record);
-          if(action==='updateRecord'&&index>=0)list[index]=record;
-          if(action==='deleteRecord'&&index>=0)list.splice(index,1);
-          data.Activity_Log.unshift({log_id:uid(),changed_at:new Date().toISOString(),action,sheet,record_id:record[key]});
-          render();
-        }
-        status(endpoint?'Perubahan tersimpan ke Spreadsheet.':'Perubahan diterapkan pada demo sementara.');
+      const key=ID_KEY[sheet],item={action,sheet,...(action==='deleteRecord'?{id:record[key]}:{record:JSON.parse(JSON.stringify(record))}),queued_at:new Date().toISOString()};
+      applyOperation(data,item);
+      if(endpoint){
+        pendingQueue.push(item);
+        saveLocalState();
+        render();updateSyncIndicator();
+        status('Tersimpan di browser. Mengirim ke Spreadsheet di latar belakang…');
+        void flushQueue();
         return true;
-      }catch(error){status('Tidak dapat mengonfirmasi perubahan: '+error.message+' Periksa Spreadsheet sebelum mencoba lagi.',true);return false}
-      finally{lock(control,false)}
+      }
+      data.Activity_Log.unshift({log_id:uid(),changed_at:new Date().toISOString(),action,sheet,record_id:record[key]});
+      saveLocalState();render();
+      status('Perubahan diterapkan pada demo sementara.');
+      return true;
     }
     function metric(label,value,detail=''){return `<div class="surface p-4 md:p-5"><p class="tiny mb-2">${escapeHTML(label)}</p><p class="metric">${escapeHTML(value)}</p>${detail?`<p class="tiny mt-2">${escapeHTML(detail)}</p>`:''}</div>`}
     function actions(sheet,id){return `<div class="flex gap-1 no-print"><button type="button" data-edit="${sheet}" data-id="${escapeHTML(id)}" class="secondary !min-h-0 !py-1 !px-2" aria-label="Edit">Edit</button><button type="button" data-delete="${sheet}" data-id="${escapeHTML(id)}" class="secondary !min-h-0 !py-1 !px-2 text-[#a6474e]" aria-label="Hapus">Hapus</button></div>`}
@@ -552,8 +588,18 @@
       $('#ses-filter').innerHTML='<option value="">Semua kategori</option>'+giftCategories.map(c=>`<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`).join('');
       $('#endpoint-url').value=endpoint;
       if(window.lucide)lucide.createIcons();
+      const cached=loadJSON(CACHE_KEY,null);
+      if(cached)data=replayPending(normalize(cached));
       render();setInterval(updateCountdown,60000);
-      if(endpoint){$('#endpoint-url').value=endpoint;try{await sync()}catch(e){status('Gagal memuat Spreadsheet: '+e.message,true)}}
+      if(endpoint){
+        $('#endpoint-url').value=endpoint;
+        try{await sync();void flushQueue()}catch(e){
+          // Tetap tampilkan cache lokal dan antrean perubahan jika server sedang lambat/tidak tersedia.
+          render();updateSyncIndicator();status('Menampilkan data lokal. Gagal memuat Spreadsheet: '+e.message,true);
+        }
+      }
+      window.addEventListener('online',()=>void flushQueue());
+      setInterval(()=>{if(pendingCount())void flushQueue()},30000);
       document.addEventListener('click',e=>{
         const nav=e.target.closest('[data-page]');if(nav)navigate(nav.dataset.page);
         const add=e.target.closest('[data-add]');if(add)openForm(add.dataset.add==='income'||add.dataset.add==='expense'?'Transactions':add.dataset.add,null,add.dataset.add);
@@ -590,7 +636,7 @@
         const button=e.submitter;lock(button,true);
         try{
           const previous=endpoint;endpoint=value;
-          try{await sync();localStorage.setItem('owp_api_endpoint',value);status('API berhasil terhubung ke Spreadsheet.')}catch(error){endpoint=previous;throw error}
+          try{await sync();localStorage.setItem('owp_api_endpoint',value);status('API berhasil terhubung ke Spreadsheet.');void flushQueue()}catch(error){endpoint=previous;throw error}
         }catch(error){status('Koneksi gagal: '+error.message,true)}
         finally{lock(button,false);connection()}
       });
