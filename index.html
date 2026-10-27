@@ -413,12 +413,35 @@
       }
     }
     function lock(control,value){busy=value;if(control){control.disabled=value;control.style.opacity=value?'.55':'1'}$('#connection-pill').textContent=value?'Memproses…':endpoint?'Terhubung ke Spreadsheet':'Mode demo · belum tersimpan'}
+    function enqueueLocalOperation(item){
+      applyOperation(data,item);
+      if(endpoint)pendingQueue.push(item);
+    }
+    function syncSeserahanExpense(record,action){
+      const transactionId='seserahan-'+record.item_id;
+      const existing=data.Transactions.find(row=>row.transaction_id===transactionId);
+      if(action==='deleteRecord'||record.status!=='Lunas'){
+        if(existing){
+          const remove={action:'deleteRecord',sheet:'Transactions',id:transactionId,queued_at:new Date().toISOString()};
+          enqueueLocalOperation(remove);
+        }
+        return;
+      }
+      const amount=Number(record.actual_price||0)*Number(record.quantity||1);
+      if(amount<=0){status('Isi Harga aktual lebih dari 0 agar bisa dicatat sebagai pengeluaran.',true);return;}
+      const transaction={
+        transaction_id:transactionId,date:record.purchase_date||today(),type:'expense',category:'Seserahan',
+        description:'Pembelian seserahan: '+record.item_name,amount,
+        payment_method:'Tunai',status:'Lunas'
+      };
+      enqueueLocalOperation({action:existing?'updateRecord':'createRecord',sheet:'Transactions',record:transaction,queued_at:new Date().toISOString()});
+    }
     async function mutate(sheet,action,record,control){
       if(busy)return false;
       const key=ID_KEY[sheet],item={action,sheet,...(action==='deleteRecord'?{id:record[key]}:{record:JSON.parse(JSON.stringify(record))}),queued_at:new Date().toISOString()};
-      applyOperation(data,item);
+      enqueueLocalOperation(item);
+      if(sheet==='Seserahan')syncSeserahanExpense(record,action);
       if(endpoint){
-        pendingQueue.push(item);
         saveLocalState();
         render();updateSyncIndicator();
         status('Tersimpan di browser. Mengirim ke Spreadsheet di latar belakang…');
@@ -455,8 +478,16 @@
       <div class="dt-toolbar no-print mt-3"><span class="tiny">Menampilkan ${filtered.length?start+1:0}–${Math.min(start+10,filtered.length)} dari ${filtered.length} data</span><div class="dt-pages"><button class="dt-page" data-dt-prev="${sheet}" ${state.page===1?'disabled':''}>‹</button>${nums}<button class="dt-page" data-dt-next="${sheet}" ${state.page===pages?'disabled':''}>›</button></div></div>`;
     }
     function refreshDataTable(sheet){
-      if(sheet==='Transactions')$('#transactions-list').innerHTML=dataTable([...data.Transactions],[['Tanggal','date',r=>dateText(r.date)],['Jenis','type',r=>r.type==='income'?'Masuk':'Keluar'],['Kategori','category'],['Keterangan','description'],['Nominal','amount',r=>money(r.amount)],['Status','status']],'Transactions');
-      if(sheet==='Guests')$('#guests-list').innerHTML=dataTable([...data.Guests],[['Nama','name'],['Undangan','invitation_status'],['Kehadiran','attendance_status']],'Guests');
+      const target=sheet==='Transactions'?$('#transactions-list'):sheet==='Guests'?$('#guests-list'):null;
+      if(!target)return;
+      const html=sheet==='Transactions'
+        ?dataTable([...data.Transactions],[['Tanggal','date',r=>dateText(r.date)],['Jenis','type',r=>r.type==='income'?'Masuk':'Keluar'],['Kategori','category'],['Keterangan','description'],['Nominal','amount',r=>money(r.amount)],['Status','status']],'Transactions')
+        :dataTable([...data.Guests],[['Nama','name'],['Undangan','invitation_status'],['Kehadiran','attendance_status']],'Guests');
+      const staging=document.createElement('div');staging.innerHTML=html;
+      const oldTable=target.querySelector('.table-wrap'),newTable=staging.querySelector('.table-wrap');
+      const oldFooter=target.querySelector('.dt-toolbar.mt-3'),newFooter=staging.querySelector('.dt-toolbar.mt-3');
+      if(oldTable&&newTable)oldTable.replaceWith(newTable);else if(newTable)target.append(newTable);
+      if(oldFooter&&newFooter)oldFooter.replaceWith(newFooter);else if(newFooter)target.append(newFooter);
     }
     function drawChart(id,type,labels,values){
       if(charts[id])charts[id].destroy();
@@ -476,7 +507,7 @@
       $('#upcoming-tasks').innerHTML=next.length?next.map(r=>`<div class="flex justify-between gap-2 py-3 border-b border-[#f0e6e3] text-sm"><span>${escapeHTML(r.task_name)}</span><span class="tiny">${dateText(r.deadline)}</span></div>`).join(''):empty();
       refreshDataTable('Transactions');
       $('#budget-list').innerHTML=table(data.Budget,[['Kategori','category'],['Target','budget_amount',r=>money(r.budget_amount)],['Realisasi','actual_amount',r=>money(categorySpent(r.category))],['Sisa','remaining_amount',r=>money(Number(r.budget_amount)-categorySpent(r.category))],['Terpakai','percentage',r=>`${Math.round(Number(r.budget_amount)?categorySpent(r.category)/Number(r.budget_amount)*100:0)}%${categorySpent(r.category)>Number(r.budget_amount)?' · Melebihi anggaran':''}`]],'Budget');
-const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Number(r.quantity||1),0),actual=data.Seserahan.reduce((a,r)=>a+Number(r.actual_price||0)*Number(r.quantity||1),0),bought=data.Seserahan.filter(r=>r.status!=='Belum dibeli').length;
+const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Number(r.quantity||1),0),actual=data.Seserahan.reduce((a,r)=>a+Number(r.actual_price||0)*Number(r.quantity||1),0),bought=data.Seserahan.filter(r=>['Lunas','Sudah dibeli','Sudah dikemas'].includes(r.status)).length;
       $('#seserahan-metrics').innerHTML=metric('Total estimasi',money(estimated))+metric('Total aktual',money(actual))+metric('Selisih estimasi − aktual',money(estimated-actual))+metric('Sudah disiapkan',`${bought}/${data.Seserahan.length}`);
       renderGifts();
       refreshDataTable('Guests');
@@ -539,7 +570,7 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
       ];
       return {
         Budget:[F('category','Kategori'),F('budget_amount','Target anggaran (Rp)','number')],
-        Seserahan:[F('item_name','Nama barang'),F('category','Kategori','select',giftCategories),F('quantity','Jumlah','number'),F('estimated_price','Estimasi harga (Rp)','number'),F('actual_price','Harga aktual (Rp)','number'),F('store','Toko / tempat pembelian','text',[],false),F('source_url','Link / sumber beli (URL)','url',[],false),F('purchase_date','Tanggal pembelian','date',[],false),F('status','Status pembelian','select',['Belum dibeli','Sudah dibeli','Sudah dikemas']),F('notes','Keterangan','textarea',[],false)],
+        Seserahan:[F('item_name','Nama barang'),F('category','Kategori','select',giftCategories),F('quantity','Jumlah','number'),F('estimated_price','Estimasi harga (Rp)','number'),F('actual_price','Harga aktual (Rp)','number'),F('store','Toko / tempat pembelian','text',[],false),F('source_url','Link / sumber beli (URL)','url',[],false),F('purchase_date','Tanggal pembelian','date',[],false),F('status','Status pembayaran','select',['Belum Lunas','Lunas']),F('notes','Keterangan','textarea',[],false)],
         Guests:[F('name','Nama tamu'),F('invitation_status','Undangan','select',['Belum dikirim','Sudah dikirim']),F('attendance_status','Kehadiran','select',['Belum konfirmasi','Hadir','Tidak hadir'])],
         Vendors:[F('vendor_name','Nama vendor'),F('category','Kategori','select',['Catering','Dekorasi','MUA','Fotografi','Videografi','Gedung','Hiburan','Wedding Organizer']),F('contact','Nama kontak'),F('whatsapp','Nomor WhatsApp','tel',[],false),F('total_price','Harga kesepakatan (Rp)','number'),F('down_payment','DP (Rp)','number'),F('payment_date','Tanggal pembayaran','date',[],false),F('status','Status pemesanan','select',['Rencana','Dipesan','Lunas','Dibatalkan'])],
         Checklist:[F('task_name','Nama tugas'),F('category','Tahap persiapan','select',['12 bulan sebelum','9 bulan sebelum','6 bulan sebelum','3 bulan sebelum','1 bulan sebelum','1 minggu sebelum','Lainnya']),F('deadline','Deadline','date'),F('priority','Prioritas','select',['Rendah','Sedang','Tinggi']),F('status','Status','select',['Belum selesai','Selesai']),F('notes','Catatan','textarea',[],false)]
@@ -559,7 +590,7 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
         else if(f.type==='textarea')input=document.createElement('textarea');
         else{input=document.createElement('input');input.type=f.type;if(f.type==='number'){input.min='0';input.step=f.key==='quantity'||f.key==='guest_count'?'1':'any'}}
         input.id='field-'+f.key;input.name=f.key;input.className='field';input.required=f.required;
-        input.value=record?.[f.key]??(f.type==='date'&&f.key==='date'?today():'');
+        input.value=(sheet==='Seserahan'&&f.key==='status'&&['Sudah dibeli','Sudah dikemas'].includes(record?.status)?'Lunas':record?.[f.key])??(f.type==='date'&&f.key==='date'?today():'');
         wrap.append(label,input);$('#form-fields').append(wrap);
       });
       $('#record-dialog').classList.remove('hidden');$('#form-fields input, #form-fields select')?.focus();
@@ -577,7 +608,7 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
     }
     document.addEventListener('DOMContentLoaded',async()=>{
       $('#desktop-nav').innerHTML=pages.map(([id,label,icon])=>`<button type="button" data-page="${id}" class="nav-btn ${id==='home'?'active':''}"><i data-lucide="${icon}"></i><span>${label}</span></button>`).join('');
-      $('#more-menu').innerHTML=pages.slice(3).filter(p=>p[0]!=='checklist').map(([id,label])=>`<button type="button" data-page="${id}" class="nav-btn">${label}</button>`).join('');
+      $('#more-menu').innerHTML=pages.filter(p=>!['home','budget','checklist'].includes(p[0])).map(([id,label])=>`<button type="button" data-page="${id}" class="nav-btn">${label}</button>`).join('');
       $('#ses-filter').innerHTML='<option value="">Semua kategori</option>'+giftCategories.map(c=>`<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`).join('');
       $('#endpoint-url').value=endpoint;
       if(window.lucide)lucide.createIcons();
@@ -610,6 +641,7 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
         if(sheet==='Transactions'){record.type=kind;if(kind==='income'){record.description=[record.source,record.description].filter(Boolean).join(' — ');delete record.source}else{record.description=[record.need,record.description].filter(Boolean).join(' — ');delete record.need}}
         if(sheet==='Guests'&&record.guest_count<1)return status('Jumlah orang minimal 1.',true);
         if(sheet==='Seserahan'&&record.quantity<1)return status('Jumlah barang minimal 1.',true);
+        if(sheet==='Seserahan'&&record.status==='Lunas'&&Number(record.actual_price||0)<=0)return status('Isi Harga aktual lebih dari 0 untuk barang yang berstatus Lunas.',true);
         if(sheet==='Seserahan'&&record.source_url&&!/^https?:\/\//i.test(record.source_url))return status('Link sumber beli harus diawali http:// atau https://.',true);
         if(sheet==='Vendors'){if(record.down_payment>record.total_price)return status('DP tidak boleh melebihi harga kesepakatan.',true);record.remaining_payment=record.total_price-record.down_payment}
         if(sheet==='Budget'){record.actual_amount=categorySpent(record.category);record.remaining_amount=record.budget_amount-record.actual_amount;record.percentage=record.budget_amount?record.actual_amount/record.budget_amount*100:0}
