@@ -81,7 +81,11 @@
     }
   
     .dt-toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
-    .dt-search{max-width:280px;width:100%}
+    .dt-search{max-width:280px;width:100%;min-width:0}
+    @media(max-width:767px){
+      #transactions-list>.dt-toolbar:not(.mt-3){display:flex!important;align-items:stretch;flex-direction:column;width:100%}
+      #transactions-list>.dt-toolbar:not(.mt-3) .dt-search{display:block!important;width:100%!important;max-width:none!important;min-height:46px;font-size:16px}
+    }
     .dt-sort{display:inline-flex;align-items:center;gap:5px;font-weight:600;text-align:left}
     .dt-pages{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px}
     .dt-page{min-width:34px;min-height:34px;padding:5px 9px;border:1px solid #eadcda;border-radius:8px;background:white;color:#59494b}
@@ -162,7 +166,12 @@
      <div class="grid xl:grid-cols-2 gap-5">
       <div class="surface p-5">
        <h2 class="text-xl mb-3">Transaksi</h2>
-       <div id="transactions-list"></div>
+       <div id="transactions-list">
+        <div class="dt-toolbar no-print">
+         <span class="tiny">10 data per halaman</span>
+         <input class="field dt-search" type="search" placeholder="Cari transaksi..." aria-label="Cari transaksi" data-dt-search="Transactions" value="">
+        </div>
+       </div>
       </div>
       <div class="surface p-5">
        <h2 class="text-xl mb-3">Pembagian anggaran</h2>
