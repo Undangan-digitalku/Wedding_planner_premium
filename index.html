@@ -629,10 +629,12 @@ const estimated=data.Seserahan.reduce((a,r)=>a+Number(r.estimated_price||0)*Numb
       render();setInterval(updateCountdown,60000);
       if(endpoint){
         $('#endpoint-url').value=endpoint;
-        try{await sync();void flushQueue()}catch(e){
-          // Tetap tampilkan cache lokal dan antrean perubahan jika server sedang lambat/tidak tersedia.
+        // Jangan menahan pemasangan event menu saat menunggu respons Spreadsheet.
+        // Navigasi dan seluruh interaksi langsung aktif; sinkronisasi berjalan di latar belakang.
+        void sync().then(()=>{void flushQueue()}).catch(e=>{
+          // Cache lokal tetap digunakan jika server lambat/tidak tersedia.
           render();updateSyncIndicator();status('Menampilkan data lokal. Gagal memuat Spreadsheet: '+e.message,true);
-        }
+        });
       }
       window.addEventListener('online',()=>void flushQueue());
       setInterval(()=>{if(pendingCount())void flushQueue()},30000);
